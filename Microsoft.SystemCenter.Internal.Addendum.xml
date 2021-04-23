@@ -1,0 +1,274 @@
+﻿<?xml version="1.0" encoding="utf-8"?><ManagementPack ContentReadable="true" SchemaVersion="2.0" OriginalSchemaVersion="1.0" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+  <Manifest>
+    <Identity>
+      <ID>Microsoft.SystemCenter.Internal.Addendum</ID>
+      <Version>1.0.0.0</Version>
+    </Identity>
+    <Name>Microsoft.SystemCenter.Internal.Addendum</Name>
+    <References>
+      <Reference Alias="Windows">
+        <ID>Microsoft.Windows.Library</ID>
+        <Version>7.5.8501.0</Version>
+        <PublicKeyToken>31bf3856ad364e35</PublicKeyToken>
+      </Reference>
+      <Reference Alias="System">
+        <ID>System.Library</ID>
+        <Version>7.5.8501.0</Version>
+        <PublicKeyToken>31bf3856ad364e35</PublicKeyToken>
+      </Reference>
+      <Reference Alias="SC">
+        <ID>Microsoft.SystemCenter.Library</ID>
+        <Version>7.0.8433.0</Version>
+        <PublicKeyToken>31bf3856ad364e35</PublicKeyToken>
+      </Reference>
+      <Reference Alias="SCInternal">
+        <ID>Microsoft.SystemCenter.Internal</ID>
+        <Version>7.0.8433.0</Version>
+        <PublicKeyToken>31bf3856ad364e35</PublicKeyToken>
+      </Reference>
+    </References>
+  </Manifest>
+  <TypeDefinitions>
+    <ModuleTypes>
+      <DataSourceModuleType ID="Microsoft.SystemCenter.Internal.Addendum.HealthServiceProperty.Discovery.DataSource" Accessibility="Internal" Batching="false">
+        <Configuration>
+          <xsd:element name="IntervalSeconds" type="xsd:integer" xmlns:xsd="http://www.w3.org/2001/XMLSchema" />
+          <xsd:element name="TimeoutSeconds" type="xsd:integer" xmlns:xsd="http://www.w3.org/2001/XMLSchema" />
+        </Configuration>
+        <OverrideableParameters>
+          <OverrideableParameter ID="IntervalSeconds" Selector="$Config/IntervalSeconds$" ParameterType="int" />
+          <OverrideableParameter ID="TimeoutSeconds" Selector="$Config/TimeoutSeconds$" ParameterType="int" />
+        </OverrideableParameters>
+        <ModuleImplementation Isolation="Any">
+          <Composite>
+            <MemberModules>
+              <DataSource ID="DataSource" TypeID="Windows!Microsoft.Windows.TimedPowerShell.DiscoveryProvider">
+                <IntervalSeconds>$Config/IntervalSeconds$</IntervalSeconds>
+                <SyncTime />
+                <ScriptName>Microsoft.SystemCenter.Internal.Addendum.HealthServiceProperty.Discovery.DataSource.ps1</ScriptName>
+                <ScriptBody>#=================================================================================
+#  Health Service Properties Modified Discovery Script
+#  Kevin Holman
+#  v1.0
+#=================================================================================
+param($SourceType, $SourceId, $ManagedEntityId, $ComputerIdentity, $ManagementGroupName, $IsAgent)
+
+# For testing discovery manually in PowerShell:
+# $SourceType = "0"
+# $SourceId = '{00000000-0000-0000-0000-000000000000}'
+# $ManagedEntityId = '{00000000-0000-0000-0000-000000000000}'
+# $ComputerIdentity = "sql1.opsmgr.net"
+# $ManagementGroupName = "SCOM"
+# $IsAgent = "True"
+
+# Gather the start time of the script
+$StartTime = Get-Date
+
+$ScriptName = 'Microsoft.SystemCenter.Internal.Addendum.HealthServiceProperty.Discovery.DataSource.ps1'
+
+#Load the MOMScript API
+$oAPI = new-object -comobject "MOM.ScriptAPI"
+
+#Check if agent is set to false or not
+If (($IsAgent -eq $null) -or ($IsAgent -eq "1") -or ($IsAgent -eq "") -or ($IsAgent -eq $true) -or ($IsAgent -eq "True"))
+{
+  $IsAgent = $True
+}
+Else
+{
+  $IsAgent = $False
+}
+
+#Load discovery module
+$oDisc = $oAPI.CreateDiscoveryData($SourceType, $SourceId, $ManagedEntityId)
+$oDisc.IsSnapshot = $True
+
+$Version = $null
+$ActionAccount = $null
+
+#Check and see if OS is Nano server                  
+$isNano = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Server\ServerLevels"
+$isNano = $isNano.NanoServer
+if($isNano -ne $null)
+{	
+	$isNano = $true
+}
+else
+{
+    $isNano = $false
+}
+
+#Get the Updated UR level agent version from a file
+If ($IsAgent)
+{
+    $AgentPath = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft Operations Manager\3.0\Setup" | select InstallDirectory -ErrorAction stop
+    $AgentPath = $AgentPath.InstallDirectory
+    If ($isNano)
+    {
+        #IsNano was True.  Getting version from OMVersion.dll file
+        try
+        {
+            $AgentVersionFile = $AgentPath + "Tools\TMF\OMVersion.Dll"
+            $ToolsFile = Get-ItemProperty $AgentVersionFile | select VersionInfo -ErrorAction stop
+            $ToolsFileVersion = $ToolsFile.VersionInfo.FileVersion
+            $Version = $ToolsFileVersion
+        }
+        catch
+        {
+            $oAPI.LogScriptEvent($ScriptName, 11, 1, "The Nano Agent file version check had an error, error: ", $error.Description)
+            #Getting version from agent Registry due to file error
+            $Version = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft Operations Manager\3.0\Setup" | select AgentVersion -ErrorAction stop
+            $Version = $Version.AgentVersion
+        }
+    }
+    Else
+    {
+        #IsNano was False.  Treating as normal agent
+        try
+        {
+            $AgentVersionFile = $AgentPath + "Tools\TMF\OMAgentTraceTMFVer.Dll"
+            $ToolsFile = Get-ItemProperty $AgentVersionFile | select VersionInfo -ErrorAction stop
+            $ToolsFileVersion = $ToolsFile.VersionInfo.FileVersion
+            $Version = $ToolsFileVersion
+        }  
+        catch
+        {
+            $oAPI.LogScriptEvent($ScriptName, 11, 1, "The Agent file version check had an error, error: ", $error.Description)
+            #Getting version from agent Registry due to file error
+            $Version = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft Operations Manager\3.0\Setup" | select AgentVersion -ErrorAction stop
+            $Version = $Version.AgentVersion
+        }
+    }
+
+}
+Else
+{
+    #IsAgent was false.  Getting version from Registry for management server or gateway
+    $Version = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft Operations Manager\3.0\Setup" | select CurrentVersion -ErrorAction stop
+    $Version = $Version.CurrentVersion
+}
+
+
+# Get the action account this script is running under.  We will assume that is the default agent action account                     
+try
+{
+    $user =  ""
+    $domain =  ""
+    if($isNano)
+    {
+        $user = $env:username
+        $domain = $env:userdnsdomain
+    }
+    else
+    {
+        $oNetwork = new-object -comobject "WScript.Network"
+        $user = $oNetwork.UserName
+        $domain = $oNetwork.UserDomain
+    }
+    If(($user.Length -eq 0) -or ($user -eq "SYSTEM"))
+    {
+        $ActionAccount = $user
+    }
+    Else
+    {
+        $ActionAccount = $domain + "\" + $user
+    }
+}
+catch
+{
+  $oAPI.LogScriptEvent($ScriptName, 11, 1, "Failed to retrieve the User name and domain for the action account, error: ", $error.Description)
+  Exit -1;
+}
+
+
+# Create Discovery Data
+$oInst = $oDisc.CreateClassInstance("$MPElement[Name='SC!Microsoft.SystemCenter.HealthService']$")
+$oInst.AddProperty("$MPElement[Name='Windows!Microsoft.Windows.Computer']/PrincipalName$", $ComputerIdentity)
+$oInst.AddProperty("$MPElement[Name='SC!Microsoft.SystemCenter.HealthService']/Version$", $Version)
+$oInst.AddProperty("$MPElement[Name='SC!Microsoft.SystemCenter.HealthService']/ActionAccountIdentity$", $ActionAccount)
+$oDisc.AddInstance($oInst)
+
+#Return discovery data normally
+$oDisc
+
+# Return Discovery data to the command line for testing (does not work from ISE)
+# $oAPI.Return($oDisc)
+
+#Log an event for script ending and total execution time.
+$EndTime = Get-Date
+$ScriptTime = ($EndTime - $StartTime).TotalSeconds
+$oAPI.LogScriptEvent($ScriptName,11,0, "Script Ending.  Returning Version: ($Version) and Action Account: ($ActionAccount).  Total Script Runtime ($ScriptTime) seconds.")
+</ScriptBody>
+                <Parameters>
+                  <Parameter>
+                    <Name>SourceType</Name>
+                    <Value>0</Value>
+                  </Parameter>
+                  <Parameter>
+                    <Name>SourceId</Name>
+                    <Value>$MPElement$</Value>
+                  </Parameter>
+                  <Parameter>
+                    <Name>ManagedEntityId</Name>
+                    <Value>$Target/Id$</Value>
+                  </Parameter>
+                  <Parameter>
+                    <Name>ComputerIdentity</Name>
+                    <Value>$Target/Host/Property[Type="Windows!Microsoft.Windows.Computer"]/PrincipalName$</Value>
+                  </Parameter>
+                  <Parameter>
+                    <Name>ManagementGroupName</Name>
+                    <Value>$Target/ManagementGroup/Name$</Value>
+                  </Parameter>
+                  <Parameter>
+                    <Name>IsAgent</Name>
+                    <Value>$Target/Property[Type="SC!Microsoft.SystemCenter.HealthService"]/IsAgent$</Value>
+                  </Parameter>
+                </Parameters>
+                <TimeoutSeconds>$Config/TimeoutSeconds$</TimeoutSeconds>
+              </DataSource>
+            </MemberModules>
+            <Composition>
+              <Node ID="DataSource" />
+            </Composition>
+          </Composite>
+        </ModuleImplementation>
+        <OutputType>System!System.Discovery.Data</OutputType>
+      </DataSourceModuleType>
+    </ModuleTypes>
+  </TypeDefinitions>
+  <Monitoring>
+    <Discoveries>
+      <Discovery ID="Microsoft.SystemCenter.Internal.Addendum.HealthServiceProperty.Discovery" Enabled="true" Target="SC!Microsoft.SystemCenter.HealthService" ConfirmDelivery="false" Remotable="false" Priority="Normal">
+        <Category>Discovery</Category>
+        <DiscoveryTypes>
+          <DiscoveryClass TypeID="SC!Microsoft.SystemCenter.HealthService">
+            <Property PropertyID="Version" />
+            <Property PropertyID="ActionAccountIdentity" />
+          </DiscoveryClass>
+        </DiscoveryTypes>
+        <DataSource ID="DS" TypeID="Microsoft.SystemCenter.Internal.Addendum.HealthServiceProperty.Discovery.DataSource">
+          <IntervalSeconds>14400</IntervalSeconds>
+          <TimeoutSeconds>120</TimeoutSeconds>
+        </DataSource>
+      </Discovery>
+    </Discoveries>
+    <Overrides>
+      <DiscoveryPropertyOverride ID="DisableOverrideForDiscoveryMicrosoftSystemCenterDiscoverHealthServiceProperties" Context="SC!Microsoft.SystemCenter.HealthService" Enforced="false" Discovery="SCInternal!Microsoft.SystemCenter.DiscoverHealthServiceProperties" Property="Enabled">
+        <Value>false</Value>
+      </DiscoveryPropertyOverride>
+    </Overrides>
+  </Monitoring>
+  <LanguagePacks>
+    <LanguagePack ID="ENU" IsDefault="true">
+      <DisplayStrings>
+        <DisplayString ElementID="Microsoft.SystemCenter.Internal.Addendum">
+          <Name>System Center Internal Library Addendum HealthService Version MP</Name>
+        </DisplayString>
+        <DisplayString ElementID="Microsoft.SystemCenter.Internal.Addendum.HealthServiceProperty.Discovery">
+          <Name>Microsoft SystemCenter Internal Addendum HealthServiceProperty Discovery</Name>
+        </DisplayString>
+      </DisplayStrings>
+    </LanguagePack>
+  </LanguagePacks>
+</ManagementPack>
